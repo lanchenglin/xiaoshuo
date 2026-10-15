@@ -15,3 +15,6 @@ htmlcov/
 initial-password.txt
 node_modules/
 .DS_Store
+
+# Optional downloader and development tool environments
+.venv-*/

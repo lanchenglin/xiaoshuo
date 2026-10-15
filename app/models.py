@@ -1,5 +1,6 @@
 from __future__ import annotations
 from typing import Literal
+from .acquisition_models import AcquisitionOptions
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 
@@ -41,6 +42,7 @@ class ProjectInput(Strict):
     max_source_chars: int = Field(default=200000, ge=1000, le=2000000)
     sample_chars_per_source: int = Field(default=30000, ge=1000, le=200000)
     demo: bool = False
+    acquisition: AcquisitionOptions = Field(default_factory=AcquisitionOptions)
 
     @field_validator("urls")
     @classmethod

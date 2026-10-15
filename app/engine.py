@@ -11,6 +11,8 @@ from .models import (Analysis,Synthesis,Concepts,Selection,Bible,ChapterPlan,Dra
 from .quality import diagnose
 from .sources import crawl,sample_chunks
 from .store import dumps,uid
+from .acquisition import BookAcquirer
+from .acquisition_models import AcquisitionOptions
 
 
 class QualityStop(PipelineError):
@@ -37,7 +39,15 @@ class NovelEngine:
     async def run(self):
         await self.guard()
         self.stage("采集与检查参考资料")
-        await crawl(self.store,self.project,self.cfg,self.gateway,self.guard,self.fetcher)
+        acquisition=AcquisitionOptions.model_validate(self.cfg.get("acquisition",{}))
+        if acquisition.mode=="books" and not self.cfg["demo"]:
+            await BookAcquirer(self.store,self.project,self.cfg,self.guard,self.fetcher).run(
+                None if acquisition.acquire_only else self.gateway)
+            if acquisition.acquire_only:
+                self.stage("参考书下载完成，可导出或继续写作")
+                return
+        else:
+            await crawl(self.store,self.project,self.cfg,self.gateway,self.guard,self.fetcher)
         sources=self.store.all("SELECT * FROM sources WHERE project_id=? AND status='ready' ORDER BY rowid",(self.project,))
         if not sources:
             if not self.cfg["demo"]:
@@ -66,9 +76,12 @@ class NovelEngine:
     async def research(self,sources):
         analyses=[]
         for source in sources:
-            chunks=sample_chunks(source["text"],self.cfg["sample_chars_per_source"])
+            acquisition=AcquisitionOptions.model_validate(self.cfg.get("acquisition",{}))
+            limit=len(source["text"]) if acquisition.analysis=="full" else self.cfg["sample_chars_per_source"]
+            chunks=sample_chunks(source["text"],limit)
             self.store.put_artifact(self.project,"coverage/"+source["id"],{
                 "source":source["title"],"available_chars":len(source["text"]),
+                "analysis_mode":acquisition.analysis,"download_metadata":json.loads(source.get("meta","{}")),
                 "analyzed_chars":sum(end-start for start,end,_ in chunks),
                 "sampled":sum(end-start for start,end,_ in chunks)<len(source["text"]),
                 "spans":[[start,end] for start,end,_ in chunks],"claim":"只分析以上实际字符范围，不推断未读情节"})

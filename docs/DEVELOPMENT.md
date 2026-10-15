@@ -1,3 +1,5 @@
+> v0.2补充：搜索、整本下载、独立下载器和全文分析已经新增。当前方案/部署/API见 [SEARCH_DOWNLOAD_PLAN.md](SEARCH_DOWNLOAD_PLAN.md)，实际完成范围以 [STATUS.md](STATUS.md) 为准。下面保留原有模块说明，旧版待办不作为新增模块的验收结论。
+
 # 后续本地开发任务（可交给Codex / Claude / Hermes）
 
 ## 先保持现有可运行基线

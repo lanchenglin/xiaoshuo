@@ -8,7 +8,7 @@ from app.main import create_app
 from playwright.sync_api import sync_playwright
 root=ROOT; (root/'screenshots').mkdir(exist_ok=True)
 with tempfile.TemporaryDirectory() as data, TestClient(create_app(data,start_worker=True,password='test-ui-password-1234')) as client, sync_playwright() as pw:
- browser=pw.chromium.launch(executable_path='/usr/bin/chromium',headless=True,args=['--no-sandbox'])
+ browser=pw.chromium.launch(executable_path='/usr/bin/chromium' if Path('/usr/bin/chromium').is_file() else None,headless=True,args=['--no-sandbox'])
  page=browser.new_page(viewport={'width':1440,'height':1080},device_scale_factor=1)
  errors=[]
  page.on('pageerror',lambda e:errors.append(str(e)))
@@ -26,6 +26,7 @@ with tempfile.TemporaryDirectory() as data, TestClient(create_app(data,start_wor
  page.add_style_tag(content=(root/'app/static/style.css').read_text())
  page.add_script_tag(content="window.fetch=async(url,options={})=>{const r=await window.__test_api({url,options});return {ok:r.status>=200&&r.status<300,status:r.status,json:async()=>r.body};};")
  page.add_script_tag(content=(root/'app/static/app.js').read_text())
+ page.add_script_tag(content=(root/'app/static/acquisition.js').read_text())
  page.locator('#login-password').fill('test-ui-password-1234')
  page.locator('#login-form button[type=submit]').click()
  page.locator('#workspace').wait_for(state='visible')

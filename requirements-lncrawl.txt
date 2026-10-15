@@ -1,0 +1,4 @@
+# Optional downloader. Install in a SEPARATE virtual environment, not the studio venv.
+# Interface inspected at this upstream commit; not claimed to be a stable release.
+# Upstream license: GPL-3.0-or-later. See docs/SEARCH_DOWNLOAD_PLAN.md.
+lightnovel-crawler @ git+https://github.com/lncrawl/lightnovel-crawler.git@59b0382d51927953aa8120c5de62dab23ce3f731

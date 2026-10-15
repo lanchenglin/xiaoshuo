@@ -23,6 +23,8 @@ from .security import Security
 from .sources import normalize_url
 from .store import Store,dumps,uid
 from .quality import char_count
+from .acquisition import setup as setup_acquisition, book_list
+from .acquisition_models import AcquisitionOptions
 
 
 class WorkerLock:
@@ -59,6 +61,7 @@ class TestProvider(BaseModel):
 def create_app(data_dir: Path | str | None=None,start_worker: bool=True,password: str | None=None):
     data=Path(data_dir or os.getenv("DATA_DIR","data"))
     store=Store(data/"studio.sqlite3")
+    setup_acquisition(store)
     security=Security(data,password)
     runner=Runner(store,security)
     @asynccontextmanager
@@ -149,6 +152,7 @@ def create_app(data_dir: Path | str | None=None,start_worker: bool=True,password
     async def meta():
         humanizer=Path(__file__).parent.parent/"third_party/humanizer-zh/SKILL.md"
         return {"version":__version__,"humanizer_available":humanizer.is_file(),"worker_enabled":start_worker,
+                "search_configured":bool(os.getenv("SEARXNG_URL")),"lncrawl_configured":bool(os.getenv("LNCRAWL_PYTHON")),
                 "privacy":"模型Key加密保存，只发给所配置的模型地址；小说资料会随任务发送给该模型。"}
 
     @app.get("/api/settings")
@@ -225,7 +229,7 @@ def create_app(data_dir: Path | str | None=None,start_worker: bool=True,password
         events=store.all("SELECT * FROM events WHERE project_id=? ORDER BY id DESC LIMIT 120",(pid,))
         revisions=store.all("SELECT id,number,label,title,char_count(text) chars,created FROM revisions WHERE project_id=? ORDER BY number,created",(pid,))
         jobs=store.all("SELECT id,status,stop,created,updated,error FROM jobs WHERE project_id=? ORDER BY created DESC LIMIT 10",(pid,))
-        return {"project":row,"chapters":chapters,"sources":sources,"artifacts":artifacts,"events":events,"revisions":revisions,"jobs":jobs,"usage":store.usage(pid)}
+        return {"project":row,"chapters":chapters,"sources":sources,"artifacts":artifacts,"events":events,"revisions":revisions,"jobs":jobs,"usage":store.usage(pid),"reference_books":book_list(store,pid)}
 
     @app.post("/api/projects/{pid}/sources/text",status_code=201)
     async def add_text(pid: str,body: SourceInput):
@@ -254,10 +258,13 @@ def create_app(data_dir: Path | str | None=None,start_worker: bool=True,password
             raise HTTPException(409,"项目已在运行/排队或已经完成，不能重复启动")
         cfg=json.loads(row["config"])
         settings=settings_raw()
-        if not cfg["demo"] and not settings["providers"]:
+        acquisition=AcquisitionOptions.model_validate(cfg.get("acquisition",{}))
+        if not cfg["demo"] and not acquisition.acquire_only and not settings["providers"]:
             raise HTTPException(400,"请先配置模型 API")
-        if not cfg["demo"] and not cfg["urls"] and not store.one("SELECT id FROM sources WHERE project_id=? AND status='ready'",(pid,)):
-            raise HTTPException(400,"请先提供参考网址或导入文本")
+        if not cfg["demo"] and not cfg["urls"] and not acquisition.queries and not store.one("SELECT id FROM sources WHERE project_id=? AND status='ready'",(pid,)):
+            raise HTTPException(400,"请先提供参考网址、搜索词或导入文本")
+        if acquisition.acquire_only and acquisition.mode!="books":
+            raise HTTPException(400,"仅下载模式需要选择整本采集")
         jid=uid()
         now=time.time()
         try:
@@ -268,6 +275,61 @@ def create_app(data_dir: Path | str | None=None,start_worker: bool=True,password
             raise HTTPException(409,"同一本书已有活动任务") from None
         store.event(pid,"任务进入自动生产队列",job_id=jid)
         return {"job_id":jid}
+
+    @app.get("/api/acquisition/status")
+    async def acquisition_status():
+        return {"search_configured":bool(os.getenv("SEARXNG_URL")),
+                "lncrawl_configured":bool(os.getenv("LNCRAWL_PYTHON")),
+                "lncrawl_allowed_hosts":[h.strip() for h in os.getenv("LNCRAWL_ALLOWED_HOSTS","").split(",") if h.strip()],
+                "note":"配置状态不是目标小说站实测结果。内置目录下载不需要模型；搜索需要SearXNG。"}
+
+    @app.put("/api/projects/{pid}/acquisition")
+    async def update_acquisition(pid: str,body: AcquisitionOptions):
+        row=project_row(pid)
+        if row["status"] in {"queued","running"}:
+            raise HTTPException(409,"请先暂停活动任务")
+        if store.one("SELECT key FROM artifacts WHERE project_id=? AND key LIKE 'research/%' LIMIT 1",(pid,)):
+            raise HTTPException(409,"已开始拆书，参考资料固定；请新建项目")
+        cfg=json.loads(row["config"])
+        cfg["acquisition"]=body.model_dump()
+        with store.connect() as conn:
+            conn.execute("UPDATE projects SET config=?,status='paused',error='',updated=? WHERE id=?",(dumps(cfg),time.time(),pid))
+            conn.execute("DELETE FROM artifacts WHERE project_id=? AND key IN ('acquisition/candidates','acquisition/discovery','acquisition/report','acquisition/done')",(pid,))
+        return {"ok":True,"note":"已保存。已下载章节保留，重新开始只补缺失章节。"}
+
+    @app.post("/api/projects/{pid}/continue-writing")
+    async def continue_writing(pid: str):
+        row=project_row(pid)
+        cfg=json.loads(row["config"])
+        options=AcquisitionOptions.model_validate(cfg.get("acquisition",{}))
+        if not options.acquire_only or not row["status"].startswith("completed") or not store.artifact(pid,"acquisition/done"):
+            raise HTTPException(409,"需要先完成一个仅下载任务")
+        if not settings_raw()["providers"]:
+            raise HTTPException(400,"请先配置模型API")
+        options.acquire_only=False
+        cfg["acquisition"]=options.model_dump()
+        store.execute("UPDATE projects SET config=?,status='paused',updated=? WHERE id=?",(dumps(cfg),time.time(),pid))
+        return await start(pid)
+
+    @app.get("/api/projects/{pid}/books/{bid}/chapters")
+    async def reference_chapters(pid: str,bid: str):
+        project_row(pid)
+        if not store.one("SELECT id FROM reference_books WHERE id=? AND project_id=?",(bid,pid)):
+            raise HTTPException(404,"参考书不存在")
+        return store.all("SELECT ordinal,title,url,status,length(text) chars,error,attempts FROM reference_chapters WHERE book_id=? ORDER BY ordinal",(bid,))
+
+    @app.get("/api/projects/{pid}/books/{bid}/export/{kind}")
+    async def reference_export(pid: str,bid: str,kind: str):
+        project_row(pid)
+        if not store.one("SELECT id FROM reference_books WHERE id=? AND project_id=?",(bid,pid)):
+            raise HTTPException(404,"参考书不存在")
+        names={"txt":"book.txt","manifest":"manifest.json"}
+        if kind not in names:
+            raise HTTPException(400,"仅支持txt/manifest")
+        path=data/"reference-books"/pid/bid/names[kind]
+        if not path.is_file():
+            raise HTTPException(409,"下载仍在进行，尚未生成合并文件")
+        return FileResponse(path,filename=f"reference-{bid[:8]}."+("txt" if kind=="txt" else "json"))
 
     @app.post("/api/projects/{pid}/stop/{action}")
     async def stop(pid: str,action: str):

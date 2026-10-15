@@ -1,0 +1,13 @@
+# Optional standalone search service. Run scripts/init_search.py first.
+# The studio itself can run natively on Windows/Linux; point SEARXNG_URL to it.
+# latest is a bootstrap default, NOT a reproducibility claim. Pin a tested digest for production.
+services:
+  searxng:
+    image: ${SEARXNG_IMAGE:-searxng/searxng:latest}
+    restart: unless-stopped
+    ports:
+      - "127.0.0.1:8080:8080"
+    volumes:
+      - ./data/searxng:/etc/searxng:rw
+    environment:
+      SEARXNG_BASE_URL: http://localhost:8080/
